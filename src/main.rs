@@ -1,8 +1,8 @@
 use std::{
     collections::BTreeMap,
     fs,
-    ops::RangeInclusive,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -29,6 +29,10 @@ struct Cli {
     #[arg(short, long)]
     output: PathBuf,
 
+    /// Optional path for generated SVG output (requires Graphviz `dot` in PATH).
+    #[arg(long)]
+    svg_output: Option<PathBuf>,
+
     /// Zero-based scanner! macro index if the input file has multiple invocations.
     #[arg(long, default_value_t = 0)]
     macro_index: usize,
@@ -52,13 +56,20 @@ fn main() -> Result<()> {
 
     write_output(&cli.output, &dot)?;
     write_output(&classes_output_path, &classes_json)?;
+    if let Some(svg_output_path) = &cli.svg_output {
+        write_svg_output(&cli.output, svg_output_path)?;
+    }
 
     println!(
-        "Generated DOT for scanner '{}' with {} mode(s) at {} and disjunct classes at {}",
+        "Generated DOT for scanner '{}' with {} mode(s) at {} and disjunct classes at {}{}",
         artifacts.scanner_name,
         artifacts.scanner_modes.len(),
         cli.output.display(),
-        classes_output_path.display()
+        classes_output_path.display(),
+        cli.svg_output
+            .as_ref()
+            .map(|path| format!(", and SVG at {}", path.display()))
+            .unwrap_or_default()
     );
 
     Ok(())
@@ -468,35 +479,6 @@ fn disjunct_classes_output_path(dot_output_path: &Path) -> PathBuf {
     path
 }
 
-fn render_interval_group(intervals: &[RangeInclusive<char>]) -> String {
-    let mut parts = intervals
-        .iter()
-        .map(|r| render_range(r.start(), r.end()))
-        .collect::<Vec<_>>();
-    parts.sort();
-    parts.join(", ")
-}
-
-fn render_range(start: &char, end: &char) -> String {
-    if start == end {
-        printable_char(*start)
-    } else {
-        format!("{}-{}", printable_char(*start), printable_char(*end))
-    }
-}
-
-fn printable_char(c: char) -> String {
-    match c {
-        '\n' => "\\n".to_string(),
-        '\r' => "\\r".to_string(),
-        '\t' => "\\t".to_string(),
-        '"' => "\\\"".to_string(),
-        '\\' => "\\\\".to_string(),
-        ch if ch.is_control() => format!("\\u{{{:x}}}", ch as u32),
-        ch => ch.to_string(),
-    }
-}
-
 fn escape_json_char(c: char) -> String {
     match c {
         '"' => "\\\"".to_string(),
@@ -520,33 +502,49 @@ fn escape_dot(s: &str) -> String {
 }
 
 fn write_output(path: &Path, dot: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create output directory {}", parent.display())
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create output directory {}", parent.display()))?;
     }
     fs::write(path, dot).with_context(|| format!("Failed to write DOT file {}", path.display()))?;
+    Ok(())
+}
+
+fn write_svg_output(dot_path: &Path, svg_path: &Path) -> Result<()> {
+    if let Some(parent) = svg_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create SVG output directory {}", parent.display())
+        })?;
+    }
+
+    let status = Command::new("dot")
+        .arg("-Tsvg")
+        .arg(dot_path)
+        .arg("-o")
+        .arg(svg_path)
+        .status()
+        .with_context(|| {
+            "Failed to execute Graphviz `dot`. Ensure Graphviz is installed and `dot` is in PATH."
+                .to_string()
+        })?;
+
+    if !status.success() {
+        bail!(
+            "Graphviz `dot` failed while generating SVG (exit status: {})",
+            status
+        );
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_render_range_simple() {
-        assert_eq!(render_range(&'a', &'a'), "a");
-        assert_eq!(render_range(&'a', &'z'), "a-z");
-    }
-
-    #[test]
-    fn test_printable_char_escapes_specials() {
-        assert_eq!(printable_char('\n'), "\\n");
-        assert_eq!(printable_char('"'), "\\\"");
-        assert_eq!(printable_char('x'), "x");
-    }
 
     #[test]
     fn test_escape_dot() {
