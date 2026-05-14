@@ -244,7 +244,7 @@ fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
             let grouped = group_transitions_by_target(state, &artifacts.character_classes)?;
             for (target, labels) in grouped {
                 let to = dfa_node_name(mode_idx, target);
-                let label = labels.join("\n");
+                let label = labels.join("|");
                 out.push_str(&format!(
                     "    {from} -> {to} [label=\"{}\"];\n",
                     escape_dot(&label)
