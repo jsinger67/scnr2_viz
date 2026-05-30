@@ -266,11 +266,8 @@ fn render_dot(artifacts: &BuildArtifacts, render_options: RenderOptions) -> Resu
         for (state_idx, state) in dfa.states.iter().enumerate() {
             let node_name = dfa_node_name(mode_idx, state_idx);
             let is_accepting = !state.accept_data.is_empty();
-            let shape = if is_accepting {
-                "doublecircle"
-            } else {
-                "circle"
-            };
+            let peripheries = if is_accepting { 2 } else { 1 };
+            let color = if is_accepting { "#b22222" } else { "#222222" };
 
             let mut label = format!("s{state_idx}");
             if is_accepting {
@@ -298,7 +295,7 @@ fn render_dot(artifacts: &BuildArtifacts, render_options: RenderOptions) -> Resu
             }
 
             out.push_str(&format!(
-                "    {node_name} [shape={shape}, label=\"{}\"];\n",
+                "    {node_name} [shape=ellipse, peripheries={peripheries}, color=\"{color}\", label=\"{}\"];\n",
                 escape_dot(&label)
             ));
         }
@@ -465,13 +462,10 @@ fn render_lookahead_dfas(
                     let node_name =
                         lookahead_node_name(mode_idx, state_idx, accept_idx, look_state_idx);
                     let is_accepting = !look_state.accept_data.is_empty();
-                    let shape = if is_accepting {
-                        "doublecircle"
-                    } else {
-                        "circle"
-                    };
+                    let peripheries = if is_accepting { 2 } else { 1 };
+                    let color = if is_accepting { "#b22222" } else { "#222222" };
                     out.push_str(&format!(
-                        "    {node_name} [shape={shape}, label=\"l{look_state_idx}\"];\n"
+                        "    {node_name} [shape=ellipse, peripheries={peripheries}, color=\"{color}\", label=\"l{look_state_idx}\"];\n"
                     ));
                 }
 
@@ -667,8 +661,8 @@ fn render_legend(out: &mut String) {
     out.push_str("    label=\"Legend\";\n");
     out.push_str("    style=rounded;\n");
     out.push_str("    color=\"#c4c4c4\";\n");
-    out.push_str("    legend_accept [shape=doublecircle, label=\"accepting state\"];\n");
-    out.push_str("    legend_normal [shape=circle, label=\"normal state\"];\n");
+    out.push_str("    legend_accept [shape=ellipse, peripheries=2, color=\"#b22222\", label=\"accepting state\"];\n");
+    out.push_str("    legend_normal [shape=ellipse, label=\"normal state\"];\n");
     out.push_str("    legend_look_pos [shape=box, style=\"rounded,dashed\", label=\"lookahead + cluster\"];\n");
     out.push_str("    legend_look_neg [shape=box, style=\"rounded,dashed\", label=\"lookahead - cluster\"];\n");
     out.push_str("    legend_mode_stack [shape=diamond, label=\"mode stack\"];\n");
