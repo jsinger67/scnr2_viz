@@ -78,8 +78,12 @@ fn main() -> Result<()> {
 fn build_artifacts(input_path: &Path, macro_index: usize) -> Result<BuildArtifacts> {
     let input = fs::read_to_string(input_path)
         .with_context(|| format!("Failed to read input file {}", input_path.display()))?;
-    let syntax = syn::parse_file(&input)
-        .with_context(|| format!("Failed to parse Rust file {}", input_path.display()))?;
+    let syntax = syn::parse_file(&input).map_err(|e| {
+        anyhow!(
+            "Failed to parse Rust file {}: {e}\nHint: Input must be a Rust source file containing a `scanner! {{ ... }}` invocation.\nIf your file contains only scanner payload (e.g. `MyScanner {{ ... }}`), wrap it in `scanner! {{ ... }}` first.",
+            input_path.display()
+        )
+    })?;
     let scanner_macro_tokens = extract_scanner_macro_tokens(&syntax, macro_index)?;
 
     let scanner_data: ScannerData = syn::parse2(scanner_macro_tokens)
