@@ -12,6 +12,7 @@ use scnr2_generate::{
     character_classes::CharacterClasses,
     dfa::Dfa,
     nfa::Nfa,
+    pattern::{AutomatonType, Lookahead},
     scanner_data::{ScannerData, TransitionToNumericMode},
     scanner_mode::ScannerMode,
 };
@@ -259,6 +260,8 @@ fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
         out.push_str("  }\n\n");
     }
 
+    render_lookahead_dfas(&mut out, artifacts)?;
+
     out.push_str("  mode_stack [shape=diamond, style=filled, fillcolor=\"#f8f8f8\", label=\"mode stack\"];\n\n");
 
     for (mode_idx, mode) in artifacts.scanner_modes.iter().enumerate() {
@@ -344,6 +347,83 @@ fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
 
     out.push_str("}\n");
     Ok(out)
+}
+
+fn render_lookahead_dfas(out: &mut String, artifacts: &BuildArtifacts) -> Result<()> {
+    for (mode_idx, dfa) in artifacts.dfas.iter().enumerate() {
+        for (state_idx, state) in dfa.states.iter().enumerate() {
+            for (accept_idx, accept_data) in state.accept_data.iter().enumerate() {
+                let (lookahead_dfa, lookahead_kind, edge_color) = match &accept_data.lookahead {
+                    Lookahead::None => continue,
+                    Lookahead::Positive(AutomatonType::Dfa(dfa)) => (dfa, "lookahead +", "#1d6f42"),
+                    Lookahead::Negative(AutomatonType::Dfa(dfa)) => (dfa, "lookahead -", "#8b1a1a"),
+                    Lookahead::Positive(_) | Lookahead::Negative(_) => {
+                        bail!("Unexpected non-DFA lookahead in mode {mode_idx}, state {state_idx}")
+                    }
+                };
+
+                let cluster_name = lookahead_cluster_name(mode_idx, state_idx, accept_idx);
+                let token_id = accept_data.terminal_type.to_string();
+                let token_label = artifacts
+                    .token_names_by_id
+                    .get(&token_id)
+                    .cloned()
+                    .unwrap_or(token_id);
+                out.push_str(&format!("  subgraph {cluster_name} {{\n"));
+                out.push_str("    style=dashed;\n");
+                out.push_str("    color=\"#9aa0a6\";\n");
+                out.push_str(&format!(
+                    "    label=\"{} for {} @ m{}_s{}\";\n",
+                    escape_dot(lookahead_kind),
+                    escape_dot(&token_label),
+                    mode_idx,
+                    state_idx
+                ));
+
+                for (look_state_idx, look_state) in lookahead_dfa.states.iter().enumerate() {
+                    let node_name =
+                        lookahead_node_name(mode_idx, state_idx, accept_idx, look_state_idx);
+                    let is_accepting = !look_state.accept_data.is_empty();
+                    let shape = if is_accepting {
+                        "doublecircle"
+                    } else {
+                        "circle"
+                    };
+                    out.push_str(&format!(
+                        "    {node_name} [shape={shape}, label=\"l{look_state_idx}\"];\n"
+                    ));
+                }
+
+                for (look_state_idx, look_state) in lookahead_dfa.states.iter().enumerate() {
+                    let from = lookahead_node_name(mode_idx, state_idx, accept_idx, look_state_idx);
+                    let grouped =
+                        group_transitions_by_target(look_state, &artifacts.character_classes)?;
+                    for (target, labels) in grouped {
+                        let to = lookahead_node_name(mode_idx, state_idx, accept_idx, target);
+                        let label = labels.join("|");
+                        out.push_str(&format!(
+                            "    {from} -> {to} [label=\"{}\"];\n",
+                            escape_dot(&label)
+                        ));
+                    }
+                }
+
+                out.push_str("  }\n");
+
+                if !lookahead_dfa.states.is_empty() {
+                    let from = dfa_node_name(mode_idx, state_idx);
+                    let to = lookahead_node_name(mode_idx, state_idx, accept_idx, 0);
+                    out.push_str(&format!(
+                        "  {from} -> {to} [style=dotted, color=\"{edge_color}\", label=\"{}\", lhead={cluster_name}];\n",
+                        escape_dot(lookahead_kind)
+                    ));
+                }
+                out.push('\n');
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn accepting_states_for_token_id(dfa: &Dfa, token: usize) -> Vec<usize> {
@@ -499,6 +579,19 @@ fn escape_json_char(c: char) -> String {
 
 fn dfa_node_name(mode_idx: usize, state_idx: usize) -> String {
     format!("m{mode_idx}_s{state_idx}")
+}
+
+fn lookahead_cluster_name(mode_idx: usize, state_idx: usize, accept_idx: usize) -> String {
+    format!("cluster_la_m{mode_idx}_s{state_idx}_a{accept_idx}")
+}
+
+fn lookahead_node_name(
+    mode_idx: usize,
+    state_idx: usize,
+    accept_idx: usize,
+    look_state_idx: usize,
+) -> String {
+    format!("la_m{mode_idx}_s{state_idx}_a{accept_idx}_s{look_state_idx}")
 }
 
 fn escape_dot(s: &str) -> String {
