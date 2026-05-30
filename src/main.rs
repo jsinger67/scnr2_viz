@@ -37,6 +37,25 @@ struct Cli {
     /// Zero-based scanner! macro index if the input file has multiple invocations.
     #[arg(long, default_value_t = 0)]
     macro_index: usize,
+
+    /// Include a legend subgraph in the rendered DOT.
+    #[arg(long, default_value_t = false)]
+    show_legend: bool,
+
+    /// Render full lookahead DFAs as separate subgraphs.
+    #[arg(long, default_value_t = false)]
+    show_lookahead_dfas: bool,
+
+    /// Show numeric token IDs in accepting-state and lookahead labels.
+    #[arg(long, default_value_t = false)]
+    show_token_ids: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RenderOptions {
+    show_legend: bool,
+    show_lookahead_dfas: bool,
+    show_token_ids: bool,
 }
 
 #[derive(Debug)]
@@ -51,7 +70,12 @@ struct BuildArtifacts {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let artifacts = build_artifacts(&cli.input, cli.macro_index)?;
-    let dot = render_dot(&artifacts)?;
+    let render_options = RenderOptions {
+        show_legend: cli.show_legend,
+        show_lookahead_dfas: cli.show_lookahead_dfas,
+        show_token_ids: cli.show_token_ids,
+    };
+    let dot = render_dot(&artifacts, render_options)?;
     let classes_json = render_disjunct_classes_json(&artifacts.character_classes);
     let classes_output_path = disjunct_classes_output_path(&cli.output);
 
@@ -91,10 +115,11 @@ fn build_artifacts(input_path: &Path, macro_index: usize) -> Result<BuildArtifac
         .map_err(|e| anyhow!("Failed to parse scanner! macro payload: {e}"))?;
 
     let scanner_name = scanner_data.name.clone();
-    let token_names_by_id = extract_token_names_from_input(&input);
+    let token_names_from_comments = extract_token_names_from_input(&input);
     let scanner_modes = scanner_data
         .build_scanner_modes()
         .map_err(|e| anyhow!("Failed to build scanner modes: {e}"))?;
+    let token_names_by_id = build_token_labels_by_id(&scanner_modes, &token_names_from_comments);
 
     let (dfas, character_classes) = build_dfas_and_classes(&scanner_modes)?;
 
@@ -105,6 +130,33 @@ fn build_artifacts(input_path: &Path, macro_index: usize) -> Result<BuildArtifac
         character_classes,
         token_names_by_id,
     })
+}
+
+fn build_token_labels_by_id(
+    scanner_modes: &[ScannerMode],
+    token_names_from_comments: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut labels = token_names_from_comments.clone();
+
+    for mode in scanner_modes {
+        for pattern in &mode.patterns {
+            let token_id = pattern.terminal_type.to_string();
+            labels
+                .entry(token_id)
+                .or_insert_with(|| fallback_label_from_pattern(&pattern.pattern));
+        }
+    }
+
+    labels
+}
+
+fn fallback_label_from_pattern(pattern: &str) -> String {
+    const MAX_LABEL_LEN: usize = 24;
+    let mut label = pattern.to_string();
+    if label.chars().count() > MAX_LABEL_LEN {
+        label = label.chars().take(MAX_LABEL_LEN).collect::<String>() + "...";
+    }
+    label
 }
 
 fn build_dfas_and_classes(scanner_modes: &[ScannerMode]) -> Result<(Vec<Dfa>, CharacterClasses)> {
@@ -171,7 +223,7 @@ fn extract_scanner_macro_tokens(file: &syn::File, macro_index: usize) -> Result<
     Ok(collector.macros.remove(macro_index))
 }
 
-fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
+fn render_dot(artifacts: &BuildArtifacts, render_options: RenderOptions) -> Result<String> {
     if artifacts.scanner_modes.len() != artifacts.dfas.len() {
         bail!(
             "Inconsistent build result: {} modes but {} DFAs",
@@ -190,6 +242,10 @@ fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
         escape_dot(&artifacts.scanner_name)
     ));
     out.push_str("  node [fontname=\"Helvetica\"];\n\n");
+
+    if render_options.show_legend {
+        render_legend(&mut out);
+    }
 
     for (mode_idx, mode) in artifacts.scanner_modes.iter().enumerate() {
         let dfa = &artifacts.dfas[mode_idx];
@@ -218,17 +274,27 @@ fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
 
             let mut label = format!("s{state_idx}");
             if is_accepting {
-                let terminal_ids = state
+                let accept_entries = state
                     .accept_data
                     .iter()
-                    .map(|a| {
-                        let id = a.terminal_type.to_string();
-                        artifacts.token_names_by_id.get(&id).cloned().unwrap_or(id)
+                    .map(|accept_data| {
+                        let id = accept_data.terminal_type.to_string();
+                        let token_name = artifacts
+                            .token_names_by_id
+                            .get(&id)
+                            .cloned()
+                            .unwrap_or_else(|| id.clone());
+                        let lookahead_suffix = lookahead_suffix(&accept_data.lookahead);
+                        if render_options.show_token_ids {
+                            format!("{token_name}({id}){lookahead_suffix}")
+                        } else {
+                            format!("{token_name}{lookahead_suffix}")
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join(",");
                 label.push('\n');
-                label.push_str(&format!("accept: {terminal_ids}"));
+                label.push_str(&format!("accept: {accept_entries}"));
             }
 
             out.push_str(&format!(
@@ -260,7 +326,9 @@ fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
         out.push_str("  }\n\n");
     }
 
-    render_lookahead_dfas(&mut out, artifacts)?;
+    if render_options.show_lookahead_dfas {
+        render_lookahead_dfas(&mut out, artifacts, render_options)?;
+    }
 
     out.push_str("  mode_stack [shape=diamond, style=filled, fillcolor=\"#f8f8f8\", label=\"mode stack\"];\n\n");
 
@@ -349,7 +417,11 @@ fn render_dot(artifacts: &BuildArtifacts) -> Result<String> {
     Ok(out)
 }
 
-fn render_lookahead_dfas(out: &mut String, artifacts: &BuildArtifacts) -> Result<()> {
+fn render_lookahead_dfas(
+    out: &mut String,
+    artifacts: &BuildArtifacts,
+    render_options: RenderOptions,
+) -> Result<()> {
     for (mode_idx, dfa) in artifacts.dfas.iter().enumerate() {
         for (state_idx, state) in dfa.states.iter().enumerate() {
             for (accept_idx, accept_data) in state.accept_data.iter().enumerate() {
@@ -368,16 +440,25 @@ fn render_lookahead_dfas(out: &mut String, artifacts: &BuildArtifacts) -> Result
                     .token_names_by_id
                     .get(&token_id)
                     .cloned()
-                    .unwrap_or(token_id);
+                    .unwrap_or_else(|| token_id.clone());
+                let lookahead_pattern = lookahead_pattern_preview(lookahead_dfa);
                 out.push_str(&format!("  subgraph {cluster_name} {{\n"));
                 out.push_str("    style=dashed;\n");
                 out.push_str("    color=\"#9aa0a6\";\n");
+                let token_display = if render_options.show_token_ids {
+                    format!("{} ({})", escape_dot(&token_label), escape_dot(&token_id))
+                } else {
+                    escape_dot(&token_label)
+                };
                 out.push_str(&format!(
-                    "    label=\"{} for {} @ m{}_s{}\";\n",
+                    "    label=\"{} for {} @ m{}_s{}{}\";\n",
                     escape_dot(lookahead_kind),
-                    escape_dot(&token_label),
+                    token_display,
                     mode_idx,
-                    state_idx
+                    state_idx,
+                    lookahead_pattern
+                        .map(|p| format!(" | /{}/", escape_dot(&p)))
+                        .unwrap_or_default()
                 ));
 
                 for (look_state_idx, look_state) in lookahead_dfa.states.iter().enumerate() {
@@ -466,7 +547,7 @@ fn group_transitions_by_target(
             .intervals
             .get(class_idx)
             .ok_or_else(|| anyhow!("Invalid disjoint class index {class_idx} in DFA transition"))?;
-        let rendered = class_idx.to_string();
+        let rendered = format!("c{class_idx}");
         grouped.entry(target).or_default().push(rendered);
     }
 
@@ -579,6 +660,40 @@ fn escape_json_char(c: char) -> String {
 
 fn dfa_node_name(mode_idx: usize, state_idx: usize) -> String {
     format!("m{mode_idx}_s{state_idx}")
+}
+
+fn render_legend(out: &mut String) {
+    out.push_str("  subgraph cluster_legend {\n");
+    out.push_str("    label=\"Legend\";\n");
+    out.push_str("    style=rounded;\n");
+    out.push_str("    color=\"#c4c4c4\";\n");
+    out.push_str("    legend_accept [shape=doublecircle, label=\"accepting state\"];\n");
+    out.push_str("    legend_normal [shape=circle, label=\"normal state\"];\n");
+    out.push_str("    legend_look_pos [shape=box, style=\"rounded,dashed\", label=\"lookahead + cluster\"];\n");
+    out.push_str("    legend_look_neg [shape=box, style=\"rounded,dashed\", label=\"lookahead - cluster\"];\n");
+    out.push_str("    legend_mode_stack [shape=diamond, label=\"mode stack\"];\n");
+    out.push_str("    legend_normal -> legend_accept [label=\"cN\"];\n");
+    out.push_str("    legend_accept -> legend_look_pos [style=dotted, color=\"#1d6f42\", label=\"lookahead +\"];\n");
+    out.push_str("    legend_accept -> legend_look_neg [style=dotted, color=\"#8b1a1a\", label=\"lookahead -\"];\n");
+    out.push_str("    legend_accept -> legend_mode_stack [style=dashed, color=\"#b06a00\", label=\"on token: push\"];\n");
+    out.push_str("  }\n\n");
+}
+
+fn lookahead_suffix(lookahead: &Lookahead) -> &'static str {
+    match lookahead {
+        Lookahead::None => "",
+        Lookahead::Positive(_) => "+LA",
+        Lookahead::Negative(_) => "-LA",
+    }
+}
+
+fn lookahead_pattern_preview(lookahead_dfa: &Dfa) -> Option<String> {
+    lookahead_dfa
+        .states
+        .iter()
+        .flat_map(|state| state.accept_data.iter())
+        .map(|accept_data| accept_data.pattern.clone())
+        .next()
 }
 
 fn lookahead_cluster_name(mode_idx: usize, state_idx: usize, accept_idx: usize) -> String {

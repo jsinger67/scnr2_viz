@@ -33,6 +33,9 @@ cargo run -- -i .\input.txt -o output.dot --svg-output .\output.svg
 - `-o, --output <PATH>`: Path to generated `.dot` file
 - `--macro-index <N>`: Zero-based index when multiple `scanner!` invocations exist (default: `0`)
 - `--svg-output <PATH>`: Optional SVG output path (requires Graphviz `dot` in `PATH`)
+- `--show-legend`: Include a legend subgraph in the DOT output (default: disabled)
+- `--show-lookahead-dfas`: Include full positive/negative lookahead DFA subgraphs (default: disabled)
+- `--show-token-ids`: Show numeric token IDs in accepting-state and lookahead labels (default: disabled)
 
 ## Generated Files
 
